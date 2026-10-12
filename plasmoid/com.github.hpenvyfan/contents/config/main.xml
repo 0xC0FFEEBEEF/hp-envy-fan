@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <!-- auto: HP's own control; curve: startTemp/startDuty to fullTemp/fullDuty; fixed: fixedDuty -->
+    <entry name="mode" type="String"><default>curve</default></entry>
+    <entry name="startTemp" type="Int"><default>60</default></entry>
+    <entry name="startDuty" type="Int"><default>40</default></entry>
+    <entry name="fullTemp" type="Int"><default>90</default></entry>
+    <entry name="fullDuty" type="Int"><default>100</default></entry>
+    <entry name="fixedDuty" type="Int"><default>70</default></entry>
+    <!-- seconds of temperature spike to ignore before speeding the fans up; 0 = react at once -->
+    <entry name="smooth" type="Int"><default>15</default></entry>
+    <!-- last HP thermal mode chosen; only "cool" is restored by the widget itself -->
+    <entry name="hpMode" type="String"><default></default></entry>
+    <!-- CPU temperature (Tctl) where it throttles; 105 C for the Ryzen 5 4500U -->
+    <entry name="limit" type="Int"><default>105</default></entry>
+    <entry name="nearMargin" type="Int"><default>10</default></entry>
+    <entry name="notifyThrottle" type="Bool"><default>true</default></entry>
+    <entry name="notifyNear" type="Bool"><default>true</default></entry>
+  </group>
+</kcfg>

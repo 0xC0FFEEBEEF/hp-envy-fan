@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Status and settings for the hp_envy_fan driver, printed as JSON.
+
+    envy-fanctl status [--limit C] [--near C]
+    envy-fanctl apply auto [--smooth SECONDS]
+    envy-fanctl apply curve "60:40 90:100" [--smooth SECONDS]
+    envy-fanctl apply fixed 70 [--smooth SECONDS]
+    envy-fanctl mode performance|balanced|cool|quiet
+"""
+
+import glob
+import json
+import os
+import subprocess
+import sys
+
+DRIVER = "hp_envy_fan"
+PROFILE = "hp-envy-fan"
+# power-profiles-daemon's names for HP's modes; it has none for "cool"
+PPD = {"performance": "performance", "balanced": "balanced", "quiet": "power-saver"}
+STATE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "envy-fanctl.json")
+
+
+def hwmon(name):
+    for d in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        if read(d + "/name") == name:
+            return d
+    return None
+
+
+def platform_profile():
+    for d in sorted(glob.glob("/sys/class/platform-profile/*")):
+        if read(d + "/name") == PROFILE:
+            return d
+    return None
+
+
+def read(path, conv=str):
+    try:
+        with open(path) as f:
+            return conv(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def cpu_times():
+    with open("/proc/stat") as f:
+        vals = [int(v) for v in f.readline().split()[1:]]
+    idle = vals[3] + vals[4]  # idle + iowait
+    return idle, sum(vals)
+
+
+def load_since_last_call():
+    idle, total = cpu_times()
+    prev = None
+    try:
+        with open(STATE) as f:
+            prev = json.load(f)
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(STATE, "w") as f:
+            json.dump({"idle": idle, "total": total}, f)
+    except OSError:
+        pass
+    if not prev or total <= prev["total"]:
+        return None
+    return round(100 * (1 - (idle - prev["idle"]) / (total - prev["total"])))
+
+
+def status(limit, near):
+    fan = hwmon(DRIVER)
+    k10 = hwmon("k10temp")
+
+    temp = read(k10 + "/temp1_input", int) if k10 else None
+    if temp is None and fan:
+        temp = read(fan + "/temp1_input", int)
+    temp = temp / 1000 if temp is not None else None
+
+    freqs = [read(p, int) for p in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")]
+    freqs = [f for f in freqs if f]
+    boost = read("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", int)
+
+    out = {
+        "driver": fan is not None,
+        "temp": temp,
+        "limit": limit,
+        "headroom": round(limit - temp, 1) if temp is not None else None,
+        "state": "unknown",
+        "load": load_since_last_call(),
+        "mhz_avg": round(sum(freqs) / len(freqs) / 1000) if freqs else None,
+        "mhz_max": round(max(freqs) / 1000) if freqs else None,
+        "mhz_boost": round(boost / 1000) if boost else None,
+        "fans": [],
+    }
+
+    if temp is not None:
+        headroom = limit - temp
+        if headroom <= 3:
+            out["state"] = "throttling"
+        elif headroom <= near:
+            out["state"] = "near"
+        elif headroom <= 2 * near:
+            out["state"] = "warm"
+        else:
+            out["state"] = "ok"
+
+    if fan:
+        for n in (1, 2):
+            pwm = read(f"{fan}/pwm{n}", int)
+            out["fans"].append({
+                "rpm": read(f"{fan}/fan{n}_input", int),
+                "duty": round(pwm * 100 / 255) if pwm is not None else None,
+            })
+        out["curve"] = read(fan + "/curve")
+        out["curve_enabled"] = read(fan + "/curve_enable") == "1"
+        out["curve_floor"] = read(fan + "/curve_floor", int)
+        out["smooth"] = read(fan + "/curve_smooth", int)
+        out["writable"] = os.access(fan + "/curve", os.W_OK) and os.access(fan + "/curve_enable", os.W_OK)
+        out["emergency"] = read(fan + "/emergency")
+        cells = read(fan + "/battery_cells")
+        out["battery"] = {
+            "health": read(fan + "/battery_health", int),
+            "cycles": read(fan + "/battery_cycles", int),
+            "cells_mv": [int(c) for c in cells.split()] if cells else [],
+            "manufactured": read(fan + "/battery_manufactured"),
+        }
+
+    bat = "/sys/class/power_supply/BAT1/"
+    if os.path.isdir(bat):
+        out.setdefault("battery", {})
+        out["battery"].update({
+            "status": read(bat + "status"),
+            "capacity": read(bat + "capacity", int),
+            "power_w": round(read(bat + "power_now", int) / 1e6, 1) if read(bat + "power_now", int) is not None else None,
+        })
+
+    pp = platform_profile()
+    out["mode"] = read(pp + "/profile") if pp else None
+
+    print(json.dumps(out))
+
+
+def write(fan, attr, value):
+    with open(f"{fan}/{attr}", "w") as f:
+        f.write(value + "\n")
+
+
+def apply(mode, arg, smooth=None):
+    fan = hwmon(DRIVER)
+    if not fan:
+        return fail("hp_envy_fan driver is not loaded")
+    try:
+        # Older drivers have no spike filter; leave them alone rather than fail.
+        if smooth is not None and os.path.exists(f"{fan}/curve_smooth"):
+            write(fan, "curve_smooth", str(int(smooth)))
+        if mode == "auto":
+            write(fan, "curve_enable", "0")
+        elif mode == "curve":
+            write(fan, "curve", arg)
+            write(fan, "curve_enable", "1")
+        elif mode == "fixed":
+            write(fan, "curve", f"0:{int(arg)}")
+            write(fan, "curve_enable", "1")
+        else:
+            return fail(f"unknown mode {mode!r}")
+    except (OSError, ValueError) as e:
+        return fail(str(e))
+    print(json.dumps({"ok": True}))
+    return 0
+
+
+def set_mode(mode):
+    pp = platform_profile()
+    if not pp:
+        return fail("HP thermal modes are not available")
+    # Through power-profiles-daemon where it has a name for the mode, so it keeps
+    # track and restores it at boot; otherwise straight to the driver.
+    if mode in PPD:
+        try:
+            r = subprocess.run(["powerprofilesctl", "set", PPD[mode]], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                print(json.dumps({"ok": True}))
+                return 0
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        write(pp, "profile", mode)
+    except OSError as e:
+        return fail(str(e))
+    print(json.dumps({"ok": True}))
+    return 0
+
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg}))
+    return 1
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[1] == "status":
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        status(float(opts.get("--limit", 105)), float(opts.get("--near", 10)))
+        return 0
+    if len(argv) >= 3 and argv[1] == "apply":
+        args = argv[2:]
+        smooth = None
+        if "--smooth" in args:
+            i = args.index("--smooth")
+            smooth = args[i + 1] if len(args) > i + 1 else None
+            del args[i:i + 2]
+        return apply(args[0], args[1] if len(args) > 1 else None, smooth)
+    if len(argv) == 3 and argv[1] == "mode":
+        return set_mode(argv[2])
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

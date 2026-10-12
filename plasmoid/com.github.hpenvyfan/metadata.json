@@ -1,0 +1,15 @@
+{
+    "KPlugin": {
+        "Id": "com.github.hpenvyfan",
+        "Name": "Envy Fan",
+        "Description": "Fan curve and CPU thermal headroom for the HP ENVY x360 15 (hp_envy_fan driver)",
+        "Icon": "temperature-normal",
+        "Category": "System Information",
+        "License": "GPL-2.0-only",
+        "Version": "0.1"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "Hardware"
+}
